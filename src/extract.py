@@ -1,18 +1,11 @@
 import random
-import re
 from faker import Faker
 
 fake = Faker('vi_VN')
 
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
 # Sinh số CCCD 12 chữ số ngẫu nhiên
 def generate_fake_citizen_id():
     return "".join([str(random.randint(0, 9)) for _ in range(12)])
-
-
-def _is_valid_email(email):
-    return bool(email and EMAIL_PATTERN.match(email))
 
 
 def _has_null_value(record):
@@ -31,36 +24,8 @@ def _validate_unique(records, key):
     return duplicates
 
 
-def _is_valid_phone(phone):
-    return bool(phone and re.match(r"^\+84\d{9}$", phone))
-
-
-def _normalize_phone_number(phone):
-    if not phone:
-        return None
-
-    digits = "".join(re.findall(r"\d+", phone))
-    if not digits:
-        return None
-
-    if digits.startswith("84") and len(digits) == 11:
-        return "+84" + digits[2:]
-    if digits.startswith("0") and len(digits) == 10:
-        return "+84" + digits[1:]
-    if len(digits) == 9:
-        return "+84" + digits
-    if len(digits) == 10:
-        return "+84" + digits[1:]
-
-    return "+" + digits
-
-
 def _validate_customer(customer):
     if _has_null_value(customer):
-        return False
-    if not _is_valid_email(customer.get("email")):
-        return False
-    if not _is_valid_phone(customer.get("phone_number")):
         return False
     if len(customer.get("citizen_id", "")) != 12:
         return False
@@ -92,12 +57,11 @@ def _validate_transaction(transaction, account_ids):
 def extract_customers(count=50):
     customers = []
     for _ in range(count):
-        phone_number = _normalize_phone_number(fake.phone_number())
         customer = {
             "citizen_id": generate_fake_citizen_id(),
             "full_name": fake.name(),
             "email": fake.unique.ascii_safe_email(),
-            "phone_number": phone_number,
+            "phone_number": fake.phone_number(),
             "risk_score": random.randint(0, 30),
         }
         if _validate_customer(customer):
