@@ -1,6 +1,6 @@
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -118,8 +118,51 @@ def clean_accounts(raw_accounts):
     return cleaned
 
 
+def _calculate_window_features(transaction, history):
+    created_at = transaction.get("created_at")
+    if not isinstance(created_at, datetime):
+        return {
+            "avg_amount_30d": 0.0,
+            "amount_vs_avg_30d_ratio": 0.0,
+            "tx_count_30d": 0,
+            "recent_tx_count_1m": 0,
+        }
+
+    cutoff_30d = created_at - timedelta(days=30)
+    cutoff_1m = created_at - timedelta(minutes=1)
+
+    recent_30d = [
+        item for item in history
+        if isinstance(item.get("created_at"), datetime)
+        and item["created_at"] >= cutoff_30d
+        and item["created_at"] <= created_at
+    ]
+
+    tx_count_30d = len(recent_30d)
+    avg_amount_30d = 0.0
+    if tx_count_30d:
+        avg_amount_30d = round(sum(item.get("amount", 0.0) or 0.0 for item in recent_30d) / tx_count_30d, 3)
+
+    amount_vs_avg_30d_ratio = 0.0
+    if avg_amount_30d > 0:
+        amount_vs_avg_30d_ratio = round(transaction.get("amount", 0.0) / avg_amount_30d, 3)
+
+    recent_1m = [
+        item for item in recent_30d
+        if isinstance(item.get("created_at"), datetime)
+        and item["created_at"] >= cutoff_1m
+    ]
+
+    return {
+        "avg_amount_30d": avg_amount_30d,
+        "amount_vs_avg_30d_ratio": amount_vs_avg_30d_ratio,
+        "tx_count_30d": tx_count_30d,
+        "recent_tx_count_1m": len(recent_1m),
+    }
+
+
 def transform_transactions(raw_transactions, account_ids):
-    transformed = []
+    normalized_transactions = []
     for tx in raw_transactions:
         normalized_amount = _normalize_amount(tx.get("amount"))
         normalized_created_at = _normalize_datetime(tx.get("created_at"))
@@ -130,14 +173,27 @@ def transform_transactions(raw_transactions, account_ids):
         }
         if not _validate_transaction(cleaned_tx, account_ids):
             continue
-        fraud_flag = is_fraud(cleaned_tx["amount"])
+        normalized_transactions.append(cleaned_tx)
+
+    normalized_transactions.sort(key=lambda tx: tx.get("created_at") or datetime.min)
+
+    transformed = []
+    history_by_account = {}
+    for tx in normalized_transactions:
+        sender_account_id = tx.get("sender_account_id")
+        history = history_by_account.setdefault(sender_account_id, [])
+        features = _calculate_window_features(tx, history)
+        fraud_flag = is_fraud(tx["amount"])
         transformed.append(
             {
-                **cleaned_tx,
+                **tx,
+                **features,
                 "is_fraud": fraud_flag,
                 "status": transaction_status(fraud_flag),
             }
         )
+        history.append(tx)
+
     return transformed
 
 
