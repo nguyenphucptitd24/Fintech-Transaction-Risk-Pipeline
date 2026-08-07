@@ -1,0 +1,12 @@
+# Môi trường ảo Python
+.venv/
+venv/
+ENV/
+
+# File cache tự sinh của Python
+__pycache__/
+*.pyc
+
+# Data & Environment credentials
+.env
+*.csv
