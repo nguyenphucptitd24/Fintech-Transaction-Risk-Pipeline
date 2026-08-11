@@ -1,6 +1,9 @@
-import random
+import logging
 import re
 from datetime import datetime, timedelta
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+logger = logging.getLogger("transform")
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -84,7 +87,16 @@ def _validate_account(account):
     return True
 
 
+def normalize_account_ids(account_ids):
+    if account_ids is None:
+        return set()
+    if isinstance(account_ids, set):
+        return account_ids
+    return set(account_ids)
+
+
 def _validate_transaction(transaction, account_ids):
+    account_id_set = normalize_account_ids(account_ids)
     if _has_null_value(transaction):
         return False
     if transaction.get("amount") is None or transaction.get("amount", 0) <= 0:
@@ -93,7 +105,7 @@ def _validate_transaction(transaction, account_ids):
         return False
     if transaction.get("sender_account_id") == transaction.get("receiver_account_id"):
         return False
-    if transaction.get("sender_account_id") not in account_ids or transaction.get("receiver_account_id") not in account_ids:
+    if transaction.get("sender_account_id") not in account_id_set or transaction.get("receiver_account_id") not in account_id_set:
         return False
     return True
 
@@ -126,6 +138,9 @@ def _calculate_window_features(transaction, history):
             "amount_vs_avg_30d_ratio": 0.0,
             "tx_count_30d": 0,
             "recent_tx_count_1m": 0,
+            "velocity_tx_count_1m": 1,
+            "unique_locations_30d": 0,
+            "unique_devices_30d": 0,
         }
 
     cutoff_30d = created_at - timedelta(days=30)
@@ -153,16 +168,26 @@ def _calculate_window_features(transaction, history):
         and item["created_at"] >= cutoff_1m
     ]
 
+    unique_locations_30d = len({item.get("location") for item in recent_30d if item.get("location")})
+    unique_devices_30d = len({item.get("device_id") for item in recent_30d if item.get("device_id")})
+
     return {
         "avg_amount_30d": avg_amount_30d,
         "amount_vs_avg_30d_ratio": amount_vs_avg_30d_ratio,
         "tx_count_30d": tx_count_30d,
         "recent_tx_count_1m": len(recent_1m),
+        "velocity_tx_count_1m": len(recent_1m) + 1,
+        "unique_locations_30d": unique_locations_30d,
+        "unique_devices_30d": unique_devices_30d,
     }
 
 
 def transform_transactions(raw_transactions, account_ids):
     normalized_transactions = []
+    account_id_set = normalize_account_ids(account_ids)
+    dropped_transactions = 0
+    flagged_transactions = 0
+
     for tx in raw_transactions:
         normalized_amount = _normalize_amount(tx.get("amount"))
         normalized_created_at = _normalize_datetime(tx.get("created_at"))
@@ -171,7 +196,15 @@ def transform_transactions(raw_transactions, account_ids):
             "amount": normalized_amount,
             "created_at": normalized_created_at,
         }
-        if not _validate_transaction(cleaned_tx, account_ids):
+        if not _validate_transaction(cleaned_tx, account_id_set):
+            dropped_transactions += 1
+            logger.warning(
+                "Dropped transaction due to validation failure: sender=%s receiver=%s amount=%s created_at=%s",
+                cleaned_tx.get("sender_account_id"),
+                cleaned_tx.get("receiver_account_id"),
+                cleaned_tx.get("amount"),
+                cleaned_tx.get("created_at"),
+            )
             continue
         normalized_transactions.append(cleaned_tx)
 
@@ -185,6 +218,15 @@ def transform_transactions(raw_transactions, account_ids):
         features = _calculate_window_features(tx, history)
         risk_reasons = evaluate_risk_rules(tx, features)
         fraud_flag = bool(risk_reasons)
+        if fraud_flag:
+            flagged_transactions += 1
+            logger.info(
+                "Flagged transaction: sender=%s receiver=%s amount=%s reasons=%s",
+                tx.get("sender_account_id"),
+                tx.get("receiver_account_id"),
+                tx.get("amount"),
+                risk_reasons,
+            )
         transformed.append(
             {
                 **tx,
@@ -196,6 +238,13 @@ def transform_transactions(raw_transactions, account_ids):
         )
         history.append(tx)
 
+    logger.info(
+        "Transform completed: input=%s valid=%s dropped=%s flagged=%s",
+        len(raw_transactions),
+        len(transformed),
+        dropped_transactions,
+        flagged_transactions,
+    )
     return transformed
 
 
@@ -206,11 +255,22 @@ def evaluate_risk_rules(transaction, features):
     if amount > 50_000_000.0:
         reasons.append("HIGH_AMOUNT_TRANSFER")
 
-    if features.get("recent_tx_count_1m", 0) >= 5:
+    if features.get("velocity_tx_count_1m", 0) >= 5:
         reasons.append("SUSPICIOUS_RAPID_TX")
 
     if features.get("amount_vs_avg_30d_ratio", 0.0) >= 10.0:
         reasons.append("UNUSUAL_AMOUNT_RATIO")
+
+    location = transaction.get("location")
+    if location and features.get("unique_locations_30d", 0) >= 3:
+        reasons.append("UNUSUAL_LOCATION_PATTERN")
+
+    device_id = transaction.get("device_id")
+    if device_id and features.get("unique_devices_30d", 0) >= 3:
+        reasons.append("UNUSUAL_DEVICE_PATTERN")
+
+    if transaction.get("transaction_type") == "TRANSFER" and amount >= 10_000_000.0 and features.get("tx_count_30d", 0) >= 3:
+        reasons.append("MULTI_ACCOUNT_TRANSFER_PATTERN")
 
     return reasons
 
@@ -220,5 +280,5 @@ def transaction_status(is_fraud_flag, statuses=None):
         return "FLAGGED"
 
     if statuses is None:
-        statuses = ["SUCCESS", "SUCCESS", "SUCCESS", "FAILED"]
-    return random.choice(statuses)
+        return "SUCCESS"
+    return statuses[0] if statuses else "SUCCESS"
