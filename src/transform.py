@@ -183,12 +183,14 @@ def transform_transactions(raw_transactions, account_ids):
         sender_account_id = tx.get("sender_account_id")
         history = history_by_account.setdefault(sender_account_id, [])
         features = _calculate_window_features(tx, history)
-        fraud_flag = is_fraud(tx["amount"])
+        risk_reasons = evaluate_risk_rules(tx, features)
+        fraud_flag = bool(risk_reasons)
         transformed.append(
             {
                 **tx,
                 **features,
                 "is_fraud": fraud_flag,
+                "risk_reasons": risk_reasons,
                 "status": transaction_status(fraud_flag),
             }
         )
@@ -197,8 +199,20 @@ def transform_transactions(raw_transactions, account_ids):
     return transformed
 
 
-def is_fraud(amount, threshold=50_000_000.0):
-    return amount > threshold and random.random() < 0.7
+def evaluate_risk_rules(transaction, features):
+    reasons = []
+
+    amount = transaction.get("amount") or 0.0
+    if amount > 50_000_000.0:
+        reasons.append("HIGH_AMOUNT_TRANSFER")
+
+    if features.get("recent_tx_count_1m", 0) >= 5:
+        reasons.append("SUSPICIOUS_RAPID_TX")
+
+    if features.get("amount_vs_avg_30d_ratio", 0.0) >= 10.0:
+        reasons.append("UNUSUAL_AMOUNT_RATIO")
+
+    return reasons
 
 
 def transaction_status(is_fraud_flag, statuses=None):
