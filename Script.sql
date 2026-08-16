@@ -46,9 +46,6 @@ CREATE TABLE IF NOT EXISTS fraud_rules (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- ===============================================================
--- INDEXES FOR PERFORMANCE & FRAUD ANALYTICS
--- ===============================================================
 
 -- Tối ưu lọc giao dịch theo mốc thời gian và trạng thái gian lận
 CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at);
